@@ -262,6 +262,60 @@ func TestIssue2132(t *testing.T) {
 	})
 }
 
+func TestDirtyFileConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		stdinInput      string
+		expectedContent string
+		expectedErr     bool
+	}{
+		{
+			name:            "overwrite",
+			stdinInput:      "overwrite\n",
+			expectedContent: "# source content\n",
+		},
+		{
+			name:            "skip",
+			stdinInput:      "skip\n",
+			expectedContent: "# modified content\n",
+		},
+		{
+			name:            "no_choice_made",
+			stdinInput:      "",
+			expectedContent: "# modified content\n",
+			expectedErr:     true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chezmoitest.WithTestFS(t, map[string]any{
+				"/home/user/.local/share/chezmoi/dot_file": "# source content\n",
+			}, func(fileSystem vfs.FS) {
+				assert.NoError(t, newTestConfig(t, fileSystem).execute([]string{"apply"}))
+				vfst.RunTests(t, fileSystem, "",
+					vfst.TestPath("/home/user/.file",
+						vfst.TestContentsString("# source content\n"),
+					),
+				)
+				assert.NoError(t, fileSystem.WriteFile("/home/user/.file", []byte("# modified content\n"), 0o666))
+				err := newTestConfig(t, fileSystem,
+					withNoTTY(true),
+					withStdin(strings.NewReader(tc.stdinInput)),
+				).execute([]string{"apply"})
+				if tc.expectedErr {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+				}
+				vfst.RunTests(t, fileSystem, "",
+					vfst.TestPath("/home/user/.file",
+						vfst.TestContentsString(tc.expectedContent),
+					),
+				)
+			})
+		})
+	}
+}
+
 func TestIssue3206(t *testing.T) {
 	chezmoitest.WithTestFS(t, map[string]any{
 		"/home/user": map[string]any{

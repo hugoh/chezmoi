@@ -1212,7 +1212,7 @@ func (c *Config) defaultPreApplyFunc(
 		case choice == "quit":
 			return chezmoi.ExitCodeError(0)
 		default:
-			panic(choice + ": unexpected choice")
+			return fmt.Errorf("%s: unexpected choice", choice)
 		}
 	}
 }

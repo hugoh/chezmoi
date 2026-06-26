@@ -81,7 +81,10 @@ func (c *Config) readChoice(prompt string, choices []string, defaultValue *strin
 		if err != nil {
 			return "", err
 		}
-		return finalModel.Value(), nil
+		if value := finalModel.Value(); value != "" {
+			return value, nil
+		}
+		return "", fmt.Errorf("no choice made")
 	}
 }
 

@@ -52,6 +52,11 @@ func TestChoiceInputModel(t *testing.T) {
 			expectedValue: "all",
 		},
 		{
+			name:    "no_input",
+			choices: choicesYesNoAll,
+			input:   "",
+		},
+		{
 			name:    "ambiguous_a",
 			choices: []string{"aaa", "abb", "bbb"},
 			input:   "a",
