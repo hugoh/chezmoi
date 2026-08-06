@@ -1209,19 +1209,58 @@ func (c *Config) defaultPreApplyFunc(
 			// we still prompt for dirty files, whereas all-overwrite adds --force to really prompt no more.
 			c.Interactive = false
 			return nil
-		case choice == "overwrite":
-			return nil
-		case choice == "all-overwrite":
-			c.force = true
-			return nil
-		case choice == "skip":
-			return fs.SkipDir
-		case choice == "quit":
-			return chezmoi.ExitCodeError(0)
 		default:
-			panic(choice + ": unexpected choice")
+			overwrite, err := c.handleOverwriteChoice(choice)
+			if err != nil {
+				return err
+			}
+			if !overwrite {
+				return fs.SkipDir
+			}
+			return nil
 		}
 	}
+}
+
+// handleOverwriteChoice interprets choice, one of the values in
+// choicesOverwrite (or "quit"), returning whether the caller should proceed
+// as if the user had agreed to overwrite. It panics if choice is not one of
+// these values.
+func (c *Config) handleOverwriteChoice(choice string) (bool, error) {
+	switch choice {
+	case "overwrite":
+		return true, nil
+	case "all-overwrite":
+		c.force = true
+		return true, nil
+	case "skip":
+		return false, nil
+	case "quit":
+		return false, chezmoi.ExitCodeError(0)
+	default:
+		panic(choice + ": unexpected choice")
+	}
+}
+
+// promptForGitRepoExternalURLChange is called when an existing git-repo
+// external's clone has an origin remote that no longer matches the
+// external's configured URL. It prompts the user for whether to remove the
+// stale clone and recreate it from the new URL.
+func (c *Config) promptForGitRepoExternalURLChange(
+	externalRelPath chezmoi.RelPath, oldURL, newURL string,
+) (bool, error) {
+	if c.force {
+		return true, nil
+	}
+
+	promptText := fmt.Sprintf(
+		"%s has a different git remote (%s) than configured (%s)", externalRelPath, oldURL, newURL,
+	)
+	choice, err := c.promptChoice(promptText, choicesOverwrite, "skip")
+	if err != nil {
+		return false, err
+	}
+	return c.handleOverwriteChoice(choice)
 }
 
 // defaultSourceDir returns the default source directory according to the XDG
@@ -2164,9 +2203,18 @@ func (c *Config) newSourceState(
 		chezmoi.WithWarnFunc(c.errorf),
 	}, options...)...)
 
+	var promptForGitRepoExternalURLChange func(chezmoi.RelPath, string, string) (bool, error)
+	switch cmd.Name() {
+	case "apply", "update":
+		// Check git remote on update operations only.
+		promptForGitRepoExternalURLChange = c.promptForGitRepoExternalURLChange
+	}
+
 	if err := sourceState.Read(ctx, &chezmoi.ReadOptions{
-		RefreshExternals: c.refreshExternals,
-		ReadHTTPResponse: c.readHTTPResponse,
+		PromptForGitRepoExternalURLChange: promptForGitRepoExternalURLChange,
+		RefreshExternals:                  c.refreshExternals,
+		ReadHTTPResponse:                  c.readHTTPResponse,
+		UseBuiltinGit:                     c.UseBuiltinGit.Value(c.useBuiltinGitAutoFunc),
 	}); err != nil {
 		return nil, err
 	}

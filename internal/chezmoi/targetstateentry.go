@@ -27,10 +27,11 @@ type TargetStateEntry interface {
 // A TargetStateModifyDirWithCmd represents running a command that modifies
 // a directory.
 type TargetStateModifyDirWithCmd struct {
-	cmdFunc       func() *exec.Cmd
-	forceRefresh  bool
-	refreshPeriod Duration
-	sourceAttr    SourceAttr
+	cmdFunc         func() *exec.Cmd
+	forceRefresh    bool
+	refreshPeriod   Duration
+	removeBeforeCmd bool
+	sourceAttr      SourceAttr
 }
 
 // A TargetStateDir represents the state of a directory in the target state.
@@ -94,6 +95,10 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 ) (bool, error) {
 	if _, ok := actualStateEntry.(*ActualStateDir); !ok {
 		if err := actualStateEntry.Remove(system); err != nil {
+			return false, err
+		}
+	} else if t.removeBeforeCmd {
+		if err := system.RemoveAll(actualStateEntry.Path()); err != nil {
 			return false, err
 		}
 	}

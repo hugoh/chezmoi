@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"text/template"
@@ -2272,6 +2273,63 @@ func requireEvaluateAll(t *testing.T, s *SourceState, destSystem System) {
 		return nil
 	})
 	assert.NoError(t, err)
+}
+
+func TestGitRemoteOriginURL(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in $PATH")
+	}
+
+	runGit := func(t *testing.T, dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		assert.NoError(t, cmd.Run())
+	}
+
+	for _, tc := range []struct {
+		name        string
+		setup       func(t *testing.T, dir string)
+		expectedURL string
+		expectedErr bool
+	}{
+		{
+			name: "origin_set",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				runGit(t, dir, "init")
+				runGit(t, dir, "remote", "add", "origin", "https://github.com/example/repo.git")
+			},
+			expectedURL: "https://github.com/example/repo.git",
+		},
+		{
+			name: "no_origin",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				runGit(t, dir, "init")
+			},
+			expectedErr: true,
+		},
+		{
+			name:        "not_a_git_repo",
+			setup:       func(t *testing.T, dir string) {},
+			expectedErr: true,
+		},
+	} {
+		for _, useBuiltinGit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/useBuiltinGit=%v", tc.name, useBuiltinGit), func(t *testing.T) {
+				dir := t.TempDir()
+				tc.setup(t, dir)
+				url, err := gitRemoteOriginURL(NewAbsPath(dir), useBuiltinGit)
+				if tc.expectedErr {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+					assert.Equal(t, tc.expectedURL, url)
+				}
+			})
+		}
+	}
 }
 
 func withEntries(sourceEntries map[RelPath]SourceStateEntry) SourceStateOption {

@@ -31,6 +31,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/coreos/go-semver/semver"
+	"github.com/go-git/go-git/v5"
 	"github.com/mitchellh/copystructure"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoierrors"
@@ -992,9 +993,61 @@ TARGET:
 
 // ReadOptions are options to SourceState.Read.
 type ReadOptions struct {
-	ReadHTTPResponse func(string, *http.Response) ([]byte, error)
-	RefreshExternals RefreshExternals
-	TimeNow          func() time.Time
+	PromptForGitRepoExternalURLChange func(externalRelPath RelPath, oldURL, newURL string) (bool, error)
+	ReadHTTPResponse                  func(string, *http.Response) ([]byte, error)
+	RefreshExternals                  RefreshExternals
+	TimeNow                           func() time.Time
+	UseBuiltinGit                     bool
+}
+
+// gitRemoteOriginURL returns the URL of the origin remote of the git
+// repository at destAbsPath, or an error if destAbsPath is not a git
+// repository or has no origin remote. If useBuiltinGit is true, it uses the
+// builtin git implementation instead of the git command.
+func gitRemoteOriginURL(destAbsPath AbsPath, useBuiltinGit bool) (string, error) {
+	if useBuiltinGit {
+		repo, err := git.PlainOpen(destAbsPath.String())
+		if err != nil {
+			return "", err
+		}
+		remote, err := repo.Remote("origin")
+		if err != nil {
+			return "", err
+		}
+		urls := remote.Config().URLs
+		if len(urls) == 0 {
+			return "", git.ErrRemoteNotFound
+		}
+		return urls[0], nil
+	}
+
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = destAbsPath.String()
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// gitCloneCmdFunc returns a cmd function that clones external into destAbsPath.
+// FIXME add support for using builtin git
+func gitCloneCmdFunc(external *External, destAbsPath AbsPath) func() *exec.Cmd {
+	// Use a sync.OnceValue to defer the call to
+	// os/exec.Command because os/exec.Command calls
+	// os/exec.LookupPath and therefore depends on the state of
+	// $PATH when os/exec.Command is called, not the state of
+	// $PATH when os/exec.Cmd.{Run,Start} is called.
+	return sync.OnceValue(func() *exec.Cmd {
+		args := []string{"clone"}
+		args = append(args, external.Clone.Args...)
+		args = append(args, external.URL, destAbsPath.String())
+		cmd := exec.Command("git", args...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd
+	})
 }
 
 // Read reads the source state from the source directory.
@@ -1289,23 +1342,8 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 			destAbsPath := s.destDirAbsPath.Join(externalRelPath)
 			switch _, err := s.system.Lstat(destAbsPath); {
 			case errors.Is(err, fs.ErrNotExist):
-				// FIXME add support for using builtin git
 				sourceStateCommand := &SourceStateCommand{
-					// Use a sync.OnceValue to defer the call to
-					// os/exec.Command because os/exec.Command calls
-					// os/exec.LookupPath and therefore depends on the state of
-					// $PATH when os/exec.Command is called, not the state of
-					// $PATH when os/exec.Cmd.{Run,Start} is called.
-					cmdFunc: sync.OnceValue(func() *exec.Cmd {
-						args := []string{"clone"}
-						args = append(args, external.Clone.Args...)
-						args = append(args, external.URL, destAbsPath.String())
-						cmd := exec.Command("git", args...)
-						cmd.Stdin = os.Stdin
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						return cmd
-					}),
+					cmdFunc:       gitCloneCmdFunc(external, destAbsPath),
 					origin:        external,
 					forceRefresh:  options.RefreshExternals == RefreshExternalsAlways,
 					refreshPeriod: external.RefreshPeriod,
@@ -1317,29 +1355,54 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 			case err != nil:
 				return err
 			default:
-				// FIXME add support for using builtin git
-				sourceStateCommand := &SourceStateCommand{
-					// Use a sync.OnceValue to defer the call to
-					// os/exec.Command because os/exec.Command calls
-					// os/exec.LookupPath and therefore depends on the state of
-					// $PATH when os/exec.Command is called, not the state of
-					// $PATH when os/exec.Cmd.{Run,Start} is called.
-					cmdFunc: sync.OnceValue(func() *exec.Cmd {
-						args := []string{"pull"}
-						args = append(args, external.Pull.Args...)
-						cmd := exec.Command("git", args...)
-						cmd.Dir = destAbsPath.String()
-						cmd.Stdin = os.Stdin
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						return cmd
-					}),
-					origin:        external,
-					forceRefresh:  options.RefreshExternals == RefreshExternalsAlways,
-					refreshPeriod: external.RefreshPeriod,
-					sourceAttr: SourceAttr{
-						External: true,
-					},
+				recreate := false
+				if options.PromptForGitRepoExternalURLChange != nil {
+					if existingURL, err := gitRemoteOriginURL(destAbsPath, options.UseBuiltinGit); err == nil &&
+						existingURL != external.URL {
+						recreate, err = options.PromptForGitRepoExternalURLChange(externalRelPath, existingURL, external.URL)
+						if err != nil {
+							return err
+						}
+					}
+				}
+
+				var sourceStateCommand *SourceStateCommand
+				if recreate {
+					sourceStateCommand = &SourceStateCommand{
+						cmdFunc:         gitCloneCmdFunc(external, destAbsPath),
+						origin:          external,
+						forceRefresh:    true,
+						refreshPeriod:   external.RefreshPeriod,
+						removeBeforeCmd: true,
+						sourceAttr: SourceAttr{
+							External: true,
+						},
+					}
+				} else {
+					// FIXME add support for using builtin git
+					sourceStateCommand = &SourceStateCommand{
+						// Use a sync.OnceValue to defer the call to
+						// os/exec.Command because os/exec.Command calls
+						// os/exec.LookupPath and therefore depends on the state of
+						// $PATH when os/exec.Command is called, not the state of
+						// $PATH when os/exec.Cmd.{Run,Start} is called.
+						cmdFunc: sync.OnceValue(func() *exec.Cmd {
+							args := []string{"pull"}
+							args = append(args, external.Pull.Args...)
+							cmd := exec.Command("git", args...)
+							cmd.Dir = destAbsPath.String()
+							cmd.Stdin = os.Stdin
+							cmd.Stdout = os.Stdout
+							cmd.Stderr = os.Stderr
+							return cmd
+						}),
+						origin:        external,
+						forceRefresh:  options.RefreshExternals == RefreshExternalsAlways,
+						refreshPeriod: external.RefreshPeriod,
+						sourceAttr: SourceAttr{
+							External: true,
+						},
+					}
 				}
 				allSourceStateEntries[externalRelPath] = append(allSourceStateEntries[externalRelPath], sourceStateCommand)
 			}

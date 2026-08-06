@@ -1,0 +1,94 @@
+[windows] skip 'UNIX only'
+[!exec:git] skip 'git not found in $PATH'
+
+mkgitconfig
+
+# create the two upstream repositories that the git-repo external's URL will
+# point at: the clones seeded below start out pointing at old-repo, while
+# .chezmoiexternal.toml is configured to point at new-repo
+cd $WORK/old-repo
+exec git init
+exec git add .
+exec git commit --message 'initial commit'
+cd $WORK
+
+cd $WORK/new-repo
+exec git init
+exec git add .
+exec git commit --message 'initial commit'
+cd $WORK
+
+# scenario: apply prompts and recreates the stale clone when told to overwrite
+chhome home/user
+exec git clone file://$WORK/old-repo $HOME/.dir
+expandenv $WORK/home/user/.local/share/chezmoi/.chezmoiexternal.toml
+stdin golden/overwrite
+exec chezmoi apply --no-tty
+stdout 'has a different git remote'
+cmp $HOME/.dir/.file golden/new-file
+exec git -C $HOME/.dir remote get-url origin
+stdout '/new-repo$'
+
+# scenario: apply prompts and leaves the stale clone alone when told to skip
+chhome home2/user
+mkgitconfig
+exec git clone file://$WORK/old-repo $HOME/.dir
+expandenv $WORK/home2/user/.local/share/chezmoi/.chezmoiexternal.toml
+stdin golden/skip
+exec chezmoi apply --no-tty
+stdout 'has a different git remote'
+cmp $HOME/.dir/.file golden/old-file
+exec git -C $HOME/.dir remote get-url origin
+stdout '/old-repo$'
+
+# scenario: --force auto-recreates without prompting
+chhome home3/user
+mkgitconfig
+exec git clone file://$WORK/old-repo $HOME/.dir
+expandenv $WORK/home3/user/.local/share/chezmoi/.chezmoiexternal.toml
+exec chezmoi apply --force
+! stdout 'has a different git remote'
+cmp $HOME/.dir/.file golden/new-file
+exec git -C $HOME/.dir remote get-url origin
+stdout '/new-repo$'
+
+# scenario: chezmoi diff is read-only and never prompts, even though the
+# remote has drifted
+chhome home4/user
+mkgitconfig
+exec git clone file://$WORK/old-repo $HOME/.dir
+expandenv $WORK/home4/user/.local/share/chezmoi/.chezmoiexternal.toml
+exec chezmoi diff
+! stdout 'has a different git remote'
+cmp $HOME/.dir/.file golden/old-file
+exec git -C $HOME/.dir remote get-url origin
+stdout '/old-repo$'
+
+-- golden/overwrite --
+overwrite
+-- golden/skip --
+skip
+-- golden/old-file --
+# contents of old-repo's .file
+-- golden/new-file --
+# contents of new-repo's .file
+-- old-repo/.file --
+# contents of old-repo's .file
+-- new-repo/.file --
+# contents of new-repo's .file
+-- home/user/.local/share/chezmoi/.chezmoiexternal.toml --
+[".dir"]
+    type = "git-repo"
+    url = "file://$WORK/new-repo"
+-- home2/user/.local/share/chezmoi/.chezmoiexternal.toml --
+[".dir"]
+    type = "git-repo"
+    url = "file://$WORK/new-repo"
+-- home3/user/.local/share/chezmoi/.chezmoiexternal.toml --
+[".dir"]
+    type = "git-repo"
+    url = "file://$WORK/new-repo"
+-- home4/user/.local/share/chezmoi/.chezmoiexternal.toml --
+[".dir"]
+    type = "git-repo"
+    url = "file://$WORK/new-repo"

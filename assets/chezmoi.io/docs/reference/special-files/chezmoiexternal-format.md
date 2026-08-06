@@ -185,6 +185,12 @@ the optional `clone.args` if the target does not exist. If the target exists,
 then chezmoi will run `git pull` with the optional `pull.args` to update the
 target.
 
+If the target exists but its `origin` remote no longer matches `url` (for
+example, because `url` was changed to point at a different fork),
+`chezmoi apply` and `chezmoi update` will prompt to overwrite (remove and
+recreate the target from the new `url`) instead of pulling from the old
+remote.
+
 For `file` and `archive` externals, chezmoi will cache downloaded URLs. The
 optional duration `refreshPeriod` field specifies how often chezmoi will
 re-download the URL. The default is zero meaning that chezmoi will never
